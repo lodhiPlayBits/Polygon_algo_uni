@@ -1,5 +1,6 @@
 from django.shortcuts import render
 from .polygon_api import PolygonAPI
+from .storage import get_storage
 from .models import Problem, SampleTestCase, ProblemTestCase, ProblemTag
 from django.utils.text import slugify
 from django.db.models import Q
@@ -88,13 +89,13 @@ def parse_problem_html(html_content):
 def index(request):
     """
     Main view for the problem migration interface. Handles GET and POST requests for migrating problems and test cases
-    between Polygon, the local database, and Azure Blob Storage.
+    between Polygon, the local database, and cloud storage.
 
     Handles the following POST actions:
         - Fetches and displays problem info from Polygon.
         - Migrates problem data to the database.
         - Migrates test cases to the database.
-        - Migrates test cases to Azure Blob Storage.
+        - Migrates test cases to cloud storage (provider set by STORAGE_PROVIDER).
 
     Args:
         request (HttpRequest): The incoming HTTP request.
@@ -122,15 +123,15 @@ def index(request):
     
     if request.method == 'POST':
         polygon_id = request.POST.get('problem_id')
-        migrate_to_azure = request.POST.get('migrate_to_azure')
+        migrate_to_storage = request.POST.get('migrate_to_storage')
         migrate_to_db = request.POST.get('migrate_to_db')
         migrate_test_cases_to_db = request.POST.get('migrate_test_cases_to_db')
         difficulty = request.POST.get('difficulty', '')
         selected_tags = request.POST.getlist('tags')  # Get selected tags
         new_tag = request.POST.get('new_tag', '').strip()  # Get new tag input
         
-        logger.debug('POST data: polygon_id=%s, migrate_to_azure=%s, migrate_to_db=%s, migrate_test_cases_to_db=%s, difficulty=%s, selected_tags=%s, new_tag=%s', 
-                    polygon_id, migrate_to_azure, migrate_to_db, migrate_test_cases_to_db, difficulty, selected_tags, new_tag)
+        logger.debug('POST data: polygon_id=%s, migrate_to_storage=%s, migrate_to_db=%s, migrate_test_cases_to_db=%s, difficulty=%s, selected_tags=%s, new_tag=%s', 
+                    polygon_id, migrate_to_storage, migrate_to_db, migrate_test_cases_to_db, difficulty, selected_tags, new_tag)
         logger.debug('All POST data: %s', dict(request.POST))
         context['difficulty'] = difficulty
         context['selected_tags'] = selected_tags
@@ -182,65 +183,49 @@ def index(request):
                         main_solution = None
                     context['main_solution'] = main_solution
             
+            # Set before the try so the except block can always read them
+            storage = None
+            storage_problem_id = None
+            storage_upload_complete = False
             try:
                 with transaction.atomic():
-                    # Handle Azure migration
-                    azure_blob_uploaded = False
-                    azure_blob_problem_id = None
-                    if migrate_to_azure:
-                        logger.info('Azure migration triggered for polygon_id=%s', polygon_id)
+                    # Handle cloud storage migration
+                    if migrate_to_storage:
+                        logger.info('Storage migration triggered for polygon_id=%s', polygon_id)
                         problem_obj = Problem.objects.filter(polygon_id=polygon_id).first()
                         if not problem_obj:
                             logger.warning('Problem with Polygon ID %s not in DB', polygon_id)
-                            context['error'] = f"Problem with Polygon ID {polygon_id} has not been migrated to the database yet. Please migrate the problem to the database first before migrating test cases to Azure."
+                            context['error'] = f"Problem with Polygon ID {polygon_id} has not been migrated to the database yet. Please migrate the problem to the database first before migrating test cases to cloud storage."
                             return render(request, 'problems/index.html', context)
-                        
-                        # Problem exists in database, proceed with Azure migration
-                        logger.info('Problem found in DB, proceeding with Azure migration')
-                        AZURE_STORAGE_ACCOUNT_URL = settings.AZURE_STORAGE_ACCOUNT_URL
-                        AZURE_TENANT_ID = settings.AZURE_TENANT_ID
-                        AZURE_CLIENT_ID = settings.AZURE_CLIENT_ID
-                        AZURE_USERNAME = settings.AZURE_USERNAME
-                        AZURE_PASSWORD = settings.AZURE_PASSWORD
-                        AZURE_CONTAINER_NAME = settings.AZURE_CONTAINER_NAME
-                        
-                        # Use the database problem ID for Azure blob naming
-                        problem_id = problem_obj.id if problem_obj else None
-                        logger.info('Azure migration params: problem_id=%s, container=%s', problem_id, AZURE_CONTAINER_NAME)
-                        
-                        # Remove Redis cache for this problem id before Azure migration
-                        if problem_obj:
-                            api.delete_problem_test_case_cache(problem_id)
-                        
+
+                        # Problem exists in database, proceed with storage migration.
+                        # The database problem ID (not the Polygon ID) is used in storage paths.
+                        problem_id = problem_obj.id
+                        storage = get_storage()
+                        logger.info('Storage migration params: problem_id=%s, provider=%s', problem_id, storage.name)
+
+                        # Remove Redis cache for this problem id before storage migration
+                        api.delete_problem_test_case_cache(problem_id)
+
                         # Check for custom checker before migration
                         custom_checker_info = api.get_custom_checker_info(polygon_id)
                         if custom_checker_info:
-                            logger.info('Custom checker detected before Azure migration: %s', custom_checker_info)
-                            context['info'] = f"Custom checker '{custom_checker_info['name']}' detected. Will be compiled and uploaded to Azure."
-                        
-                        logger.info('Calling migrate_to_azure_blob')
+                            logger.info('Custom checker detected before storage migration: %s', custom_checker_info)
+                            context['info'] = f"Custom checker '{custom_checker_info['name']}' detected. Will be compiled and uploaded to {storage.name}."
+
+                        logger.info('Calling migrate_to_storage')
+                        # Set before uploading so a failure part-way through still rolls back the files already written
+                        storage_problem_id = problem_id
                         try:
-                            api.migrate_to_azure_blob(
-                                polygon_id,
-                                AZURE_STORAGE_ACCOUNT_URL,
-                                AZURE_TENANT_ID,
-                                AZURE_CLIENT_ID,
-                                AZURE_USERNAME,
-                                AZURE_PASSWORD,
-                                AZURE_CONTAINER_NAME,
-                                problem_id
-                            )
-                            azure_blob_uploaded = True
-                            azure_blob_problem_id = problem_id
+                            uploaded_count = api.migrate_to_storage(polygon_id, storage, problem_id)
                         except Exception as e:
-                            logger.error('Azure migration failed: %s', e, exc_info=True)
-                            # Compensate: attempt to delete any uploaded blobs if possible (pseudo-code, implement as needed)
-                            # api.delete_azure_blob(problem_id)
-                            context['error'] = f"Azure migration failed: {str(e)}"
+                            logger.error('Storage migration failed: %s', e, exc_info=True)
                             raise
-                        logger.info('Azure migration completed successfully')
-                        
-                        success_message = "Test cases migrated to Azure Blob Storage successfully."
+                        # The upload is finished: a later failure in the display-only fetches below must not delete it
+                        storage_upload_complete = True
+                        logger.info('Storage migration completed successfully')
+
+                        success_message = f"{uploaded_count} test cases uploaded to {storage.name} under test_cases/{problem_id}/."
                         if custom_checker_info:
                             success_message += f" Custom checker '{custom_checker_info['name']}' was also compiled and uploaded."
                         context['success'] = success_message
@@ -258,7 +243,7 @@ def index(request):
 
                     # Fetch all test cases for display
                     all_test_cases = []
-                    if(migrate_to_db or migrate_test_cases_to_db or migrate_to_azure):
+                    if(migrate_to_db or migrate_test_cases_to_db or migrate_to_storage):
                         all_test_cases=api.get_test_cases_from_redis(polygon_id)
                         if all_test_cases is None:
                             logger.warning('Test cases not found in Redis, fetching from Polygon')
@@ -566,10 +551,20 @@ def index(request):
 
             except Exception as e:
                 logger.error('Exception in index view: %s', e, exc_info=True)
-                context['error'] = f"Migration failed and all changes have been rolled back. Reason: {str(e)}"
-                # Compensate for Azure: attempt to delete any uploaded blobs if azure_blob_uploaded is True (pseudo-code)
-                if azure_blob_uploaded and azure_blob_problem_id:
-                    api.delete_azure_blob(azure_blob_problem_id)
+                if storage_upload_complete:
+                    # Files are in storage; only reloading the problem for display failed
+                    context['error'] = f"Test cases were uploaded to {storage.name}, but reloading the problem from Polygon failed. Reason: {str(e)}"
+                elif storage is not None and storage_problem_id:
+                    # Upload failed part-way: remove the partial set so storage never holds a mix of old and new files
+                    cleaned_up = api.delete_test_case_files(storage, storage_problem_id)
+                    context.pop('success', None)
+                    if cleaned_up:
+                        outcome = "so this problem's files were removed from storage"
+                    else:
+                        outcome = "and removing the partial upload also failed, so some of this problem's files may remain in storage"
+                    context['error'] = f"Uploading test cases to {storage.name} failed, {outcome}. Fix the cause and run the upload again. Reason: {str(e)}"
+                else:
+                    context['error'] = f"Migration failed and all changes have been rolled back. Reason: {str(e)}"
                 # Compensate for Redis: clear any cached test cases if needed
                 api.clear_test_cases_from_redis(polygon_id)
 

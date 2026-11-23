@@ -1,12 +1,12 @@
 # PolygonMigration
 
 ## Overview
-PolygonMigration is a Django-based web application designed to facilitate the migration of programming problems and their test cases from the [Polygon](https://polygon.codeforces.com/) platform to a local database and Azure Blob Storage. It provides a user-friendly interface for staff users to fetch, review, tag, and migrate problems, as well as manage test cases and metadata.
+PolygonMigration is a Django-based web application designed to facilitate the migration of programming problems and their test cases from the [Polygon](https://polygon.codeforces.com/) platform to a local database and cloud storage (AWS S3 or any S3-compatible service, or Azure Blob Storage). It provides a user-friendly interface for staff users to fetch, review, tag, and migrate problems, as well as manage test cases and metadata.
 
 ## Features
 - **Polygon Integration:** Fetch problems and test cases directly from Polygon using API keys.
 - **Database Migration:** Store problem statements, metadata, and test cases in a PostgreSQL database.
-- **Azure Blob Storage:** Upload test cases to Azure Blob Storage for scalable storage and retrieval.
+- **Cloud Storage:** Upload test cases to AWS S3 (or R2, Oracle Cloud, MinIO) or Azure Blob Storage, chosen with `STORAGE_PROVIDER`. Files are stored as `test_cases/{db_problem_id}/{test_number}` (input) and `test_cases/{db_problem_id}/{test_number}.a` (output).
 - **Tagging & Metadata:** Add, search, and manage tags and difficulty levels for each problem.
 - **Admin Interface:** Manage users, problems, tags, and test cases via Django admin.
 - **Custom User Model:** Email-based authentication with extended user profile fields.
@@ -17,14 +17,14 @@ PolygonMigration is a Django-based web application designed to facilitate the mi
 2. **Fetch Problem:** Enter a Polygon Problem ID to fetch problem details and test cases.
 3. **Review & Tag:** Review the fetched problem, select difficulty, and add tags.
 4. **Migrate to Database:** Save the problem and metadata to the local database.
-5. **Migrate Test Cases:** Optionally, migrate test cases to the database and/or Azure Blob Storage.
+5. **Migrate Test Cases:** Optionally, migrate test cases to the database and/or cloud storage.
 6. **View & Manage:** Use the admin interface for advanced management of problems, tags, and users.
 
 ## Setup Instructions
 ### 1. Prerequisites
 - Python 3.8+
 - PostgreSQL database
-- [Azure account](https://portal.azure.com/) with Blob Storage and an AAD application
+- A storage bucket: AWS S3 or another S3-compatible service (Cloudflare R2, Oracle Cloud, MinIO), or an [Azure account](https://portal.azure.com/) with Blob Storage and an AAD application
 - Polygon API credentials
 
 ### 2. Clone the Repository
@@ -65,7 +65,17 @@ DB_PORT=5432
 POLYGON_API_KEY=your_polygon_api_key
 POLYGON_API_SECRET=your_polygon_api_secret
 
-# Azure Blob Storage
+# Cloud storage: s3 (AWS S3 or S3-compatible) or azure. Defaults to azure if unset.
+STORAGE_PROVIDER=s3
+
+# S3 / S3-compatible (STORAGE_PROVIDER=s3)
+S3_BUCKET_NAME=your-bucket-name
+S3_REGION=ap-south-1
+S3_ACCESS_KEY_ID=your-access-key-id
+S3_SECRET_ACCESS_KEY=your-secret-access-key
+S3_ENDPOINT_URL=          # empty for AWS; set for R2, Oracle Cloud, MinIO
+
+# Azure Blob Storage (STORAGE_PROVIDER=azure)
 AZURE_STORAGE_ACCOUNT_URL=https://<your-storage-account>.blob.core.windows.net/
 AZURE_TENANT_ID=your-tenant-id
 AZURE_CLIENT_ID=your-client-id
@@ -136,7 +146,7 @@ Access the app at [http://localhost:8000/](http://localhost:8000/)
   - Fetch a problem by Polygon ID.
   - Select difficulty and tags.
   - Migrate to the database.
-  - Migrate test cases to the database and/or Azure.
+  - Migrate test cases to the database and/or cloud storage ("Migrate Test Cases to Cloud Storage").
 
 ## Environment Variables Reference
 | Variable                  | Description                                 |
@@ -151,6 +161,12 @@ Access the app at [http://localhost:8000/](http://localhost:8000/)
 | DB_PORT                   | PostgreSQL port                             |
 | POLYGON_API_KEY           | Polygon API key                             |
 | POLYGON_API_SECRET        | Polygon API secret                          |
+| STORAGE_PROVIDER          | `s3` or `azure` (default `azure`)           |
+| S3_BUCKET_NAME            | S3 bucket name (required for `s3`)          |
+| S3_REGION                 | Bucket region, e.g. `ap-south-1`            |
+| S3_ACCESS_KEY_ID          | Access key (optional with an IAM role)      |
+| S3_SECRET_ACCESS_KEY      | Secret key (optional with an IAM role)      |
+| S3_ENDPOINT_URL           | Empty for AWS; endpoint for R2/OCI/MinIO    |
 | AZURE_STORAGE_ACCOUNT_URL | Azure Blob Storage account URL              |
 | AZURE_TENANT_ID           | Azure AD tenant ID                          |
 | AZURE_CLIENT_ID           | Azure AD application client ID              |
