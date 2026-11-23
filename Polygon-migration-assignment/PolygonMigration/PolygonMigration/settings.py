@@ -127,6 +127,16 @@ POLYGON_API_SECRET = os.getenv("POLYGON_API_SECRET")
 if not POLYGON_API_KEY or not POLYGON_API_SECRET:
     raise Exception("POLYGON_API_KEY and POLYGON_API_SECRET must be set in the .env file")
 
+# Cloud storage for test case files. Options: s3 (AWS S3 or any S3-compatible provider), azure.
+# Defaults to azure so existing deployments that only set AZURE_* keep working.
+STORAGE_PROVIDER = os.getenv("STORAGE_PROVIDER", "azure")
+
+S3_BUCKET_NAME = os.getenv("S3_BUCKET_NAME")
+S3_REGION = os.getenv("S3_REGION")
+S3_ACCESS_KEY_ID = os.getenv("S3_ACCESS_KEY_ID")
+S3_SECRET_ACCESS_KEY = os.getenv("S3_SECRET_ACCESS_KEY")
+S3_ENDPOINT_URL = os.getenv("S3_ENDPOINT_URL")  # Empty for AWS; set for R2, OCI, MinIO, etc.
+
 AZURE_STORAGE_ACCOUNT_URL = os.getenv("AZURE_STORAGE_ACCOUNT_URL")
 AZURE_TENANT_ID = os.getenv("AZURE_TENANT_ID")
 AZURE_CLIENT_ID = os.getenv("AZURE_CLIENT_ID")
